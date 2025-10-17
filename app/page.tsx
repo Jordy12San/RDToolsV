@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 type Step = "idle" | "scaling" | "ready" | "generating" | "done" | "error";
 
 export default function HomePage() {
+  // UI state
   const [step, setStep] = useState<Step>("idle");
   const [statusText, setStatusText] = useState<string>("");
   const [progress, setProgress] = useState<number>(0);
@@ -12,16 +13,24 @@ export default function HomePage() {
   const [naImage, setNaImage] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
 
+  // Keuzes
   const [kleurVal, setKleurVal] = useState<string>("Antraciet (RAL 7016) • verdiept profiel");
   const [kleurHex, setKleurHex] = useState<string>("#383E42");
   const [finishVal, setFinishVal] = useState<string>("Mat");
 
+  // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const preparedBlobRef = useRef<Blob | null>(null);
 
-  useEffect(() => { setStatusText(""); setProgress(0); }, []);
+  useEffect(() => {
+    setStatusText("");
+    setProgress(0);
+  }, []);
 
-  async function scaleTo512(file: File): Promise<{ blob: Blob; url: string }>{{
+  // ===== Helpers =====
+
+  // Schaal client-side naar 512 voor snellere upload
+  async function scaleTo512(file: File): Promise<{ blob: Blob; url: string }> {
     const url = URL.createObjectURL(file);
     const img = document.createElement("img");
     img.src = url;
@@ -43,18 +52,20 @@ export default function HomePage() {
 
     URL.revokeObjectURL(url);
     return { blob, url: outUrl };
-  }}
+  }
 
-  function blobToDataURL(blob: Blob): Promise<string>{{
-    return new Promise((resolve,reject)=>{{
+  // Blob → dataURL
+  function blobToDataURL(blob: Blob): Promise<string> {
+    return new Promise((resolve,reject)=>{
       const fr = new FileReader();
       fr.onload = () => resolve(String(fr.result));
       fr.onerror = reject;
       fr.readAsDataURL(blob);
-    }});
-  }}
+    });
+  }
 
-  function makePrompt(){{
+  // Prompt
+  function makePrompt(){
     const finish = finishVal.toLowerCase();
     const text = kleurVal;
     const hex = kleurHex;
@@ -64,89 +75,95 @@ export default function HomePage() {
       'Do not change walls/brickwork, roof, ground, people, vehicles, sky, or background.',
       'Keep lighting, geometry, and perspective identical.'
     ].join(' ');
-  }}
+  }
 
-  async function generateOnce({ blob, prompt }:{ blob: Blob; prompt: string; }) {{
+  // Synchrone generatie (geen wachtrij)
+  async function generateOnce({ blob, prompt }:{ blob: Blob; prompt: string; }) {
     const fd = new FormData();
     fd.append("prompt", prompt);
-    fd.append("base", await blobToDataURL(blob));
+    fd.append("base", await blobToDataURL(blob)); // dataURL meesturen naar server
 
-    const res = await fetch("/api/generate-sync", {{ method: "POST", body: fd }});
-    if (!res.ok) {{
+    const res = await fetch("/api/generate-sync", { method: "POST", body: fd });
+    if (!res.ok) {
       const t = await res.text().catch(()=>"(geen tekst)");
       throw new Error(`Genereren mislukt: ${res.status} ${t.slice(0,200)}`);
-    }}
-    const data = await res.json();
+    }
+    const data = await res.json(); // { url }
     return data.url as string;
-  }}
+  }
 
-  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>){{
+  // ===== Events =====
+
+  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>){
     const f = e.target.files?.[0];
     setNaImage(null);
     setStatusText(""); setProgress(0);
 
-    if (!f) {{
+    if (!f) {
       setVoorImage(null);
       preparedBlobRef.current = null;
       setStep("idle");
       return;
-    }}
+    }
 
     setStatusText("Foto schalen…");
     setStep("scaling");
-    try{{
+    try{
       const out = await scaleTo512(f);
       preparedBlobRef.current = out.blob;
       setVoorImage(out.url);
       setStatusText("Klaar om te genereren.");
       setStep("ready");
-    }}catch(err:any){{
+    }catch(err:any){
       setStatusText("❌ Fout bij schalen van afbeelding.");
       setStep("error");
       console.error(err);
-    }}
-  }}
+    }
+  }
 
-  async function onGenerate(){{
-    try{{
-      if (!preparedBlobRef.current){{ setStatusText("📷 Kies eerst een foto."); return; }}
+  async function onGenerate(){
+    try{
+      if (!preparedBlobRef.current){ setStatusText("📷 Kies eerst een foto."); return; }
       setIsGenerating(true);
       setNaImage(null);
       setStatusText("Bezig…");
       setProgress(10);
       setStep("generating");
 
+      // Simuleer voortgang terwijl we wachten (max ~60s)
       const start = Date.now();
-      const iv = setInterval(() => {{
+      const iv = setInterval(() => {
         const elapsed = Date.now() - start;
-        const pct = Math.min(95, 10 + Math.floor((elapsed/60000) * 85));
+        const pct = Math.min(95, 10 + Math.floor((elapsed/60000) * 85)); // tot 95% in 60s
         setProgress(pct);
         setStatusText(`Genereren bij Reno loopt… ${pct}% • Dit duurt meestal 10–30 seconden`);
-      }}, 800);
+      }, 800);
 
-      const url = await generateOnce({{ blob: preparedBlobRef.current, prompt: makePrompt() }});
+      const url = await generateOnce({ blob: preparedBlobRef.current, prompt: makePrompt() });
 
       clearInterval(iv);
       setNaImage(url);
       setStatusText("✅ Klaar! 100%");
       setProgress(100);
       setStep("done");
-    }}catch(err:any){{
+    }catch(err:any){
       console.error(err);
       setStatusText("❌ Fout: " + (err?.message || "Onbekend"));
       setStep("error");
-    }}finally{{
+    }finally{
       setIsGenerating(false);
-    }}
-  }}
+    }
+  }
 
-  function onReset(){{
+  function onReset(){
     setStatusText(""); setProgress(0);
     setVoorImage(null); setNaImage(null);
     preparedBlobRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
     setStep("idle");
-  }}
+  }
+
+  // ===== UI =====
 
   return (
     <>
