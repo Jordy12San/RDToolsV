@@ -77,21 +77,36 @@ export default function HomePage() {
     ].join(' ');
   }
 
-  // Synchrone generatie (geen wachtrij)
-  async function generateOnce({ blob, prompt }:{ blob: Blob; prompt: string; }) {
-    const fd = new FormData();
-    fd.append("prompt", prompt);
-    fd.append("base", await blobToDataURL(blob)); // dataURL meesturen naar server
+// Synchrone generatie (geen wachtrij) – met client-timeout
+async function generateOnce({ blob, prompt }:{ blob: Blob; prompt: string; }) {
+  const fd = new FormData();
+  fd.append("prompt", prompt);
 
-    const res = await fetch("/api/generate-sync", { method: "POST", body: fd });
+  // Blob -> dataURL
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result));
+    fr.onerror = reject;
+    fr.readAsDataURL(blob);
+  });
+  fd.append("base", dataUrl);
+
+  // Client-timeout (AbortController)
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 65000);
+
+  try{
+    const res = await fetch("/api/generate-sync", { method: "POST", body: fd, signal: controller.signal });
     if (!res.ok) {
-      const t = await res.text().catch(()=>"(geen tekst)");
-      throw new Error(`Genereren mislukt: ${res.status} ${t.slice(0,200)}`);
+      const ttxt = await res.text().catch(()=>"(geen tekst)");
+      throw new Error(`Genereren mislukt: ${res.status} ${ttxt.slice(0,200)}`);
     }
     const data = await res.json(); // { url }
     return data.url as string;
+  } finally {
+    clearTimeout(t);
   }
-
+}
   // ===== Events =====
 
   async function onFileChange(e: React.ChangeEvent<HTMLInputElement>){
