@@ -71,7 +71,7 @@ export async function POST(req: Request) {
     fd.append("prompt", prompt);
     fd.append("model", "gpt-image-1");
     fd.append("n", "1");
-    fd.append("size", "512x512");
+    fd.append("size", "auto");
 
     const openaiRes = await callOpenAI(fd);
     const reqId = openaiRes.headers.get("x-request-id") || "";
