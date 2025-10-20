@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
+import sharp from "sharp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // verhoog server timeout (binnen je hosting-limieten)
+export const maxDuration = 300; // pas aan binnen hosting-limieten
 
-// DataURL -> Buffer (we verwachten image/png vanaf de client)
+// Parse DataURL -> Buffer (elk inputtype toegestaan)
 function dataURLtoBuffer(dataUrl: string): { mime: string; buffer: Buffer } {
   const [meta, b64] = dataUrl.split(",");
-  const mime = meta.split(";")[0].split(":")[1] || "image/png";
+  const mime = meta.split(";")[0].split(":")[1] || "application/octet-stream";
   return { mime, buffer: Buffer.from(b64, "base64") };
 }
 
-// Fetch met abort-timeout zodat requests nooit “oneindig” hangen
+// Fetch met abort-timeout zodat requests niet eindeloos hangen
 function abortableFetch(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
   const { timeoutMs = 110_000, ...rest } = init; // ~110s
   const controller = new AbortController();
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
     const prompt = String(form.get("prompt") || "");
-    const base = String(form.get("base") || ""); // dataURL (image/png verwacht)
+    const base = String(form.get("base") || ""); // dataURL (elk type toegestaan)
 
     if (!prompt || !base) {
       return NextResponse.json({ error: "Missing prompt/base" }, { status: 400 });
@@ -40,19 +41,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "BLOB_READ_WRITE_TOKEN ontbreekt" }, { status: 500 });
     }
 
-    // 1) Multipart voor OpenAI Images Edits (vereist PNG)
+    // 1) Decodeer client-afbeelding (ongeacht JPEG/WEBP/HEIC/etc) -> forceer PNG met sharp
+    const { buffer: inBuf } = dataURLtoBuffer(base);
+    // sharp leest veel formaten, converteert naar PNG die OpenAI vereist
+    const pngBuffer = await sharp(inBuf).png().toBuffer();
+
+    // 2) Bouw multipart voor OpenAI Images Edits (PNG verplicht)
     const boundary = "----rdtoolsv_" + Math.random().toString(36).slice(2);
     const CRLF = "\r\n";
-
-    const { buffer: baseBuf, mime } = dataURLtoBuffer(base);
-
-    // Controle: als het geen PNG is, geef duidelijke fout terug
-    if (mime !== "image/png") {
-      return NextResponse.json(
-        { error: `Client stuurde ${mime}. Stuur PNG (pas canvas.toBlob(...) aan naar "image/png").` },
-        { status: 400 }
-      );
-    }
 
     const parts: Buffer[] = [];
     function pushField(name: string, value: string) {
@@ -69,7 +65,7 @@ export async function POST(req: NextRequest) {
     }
 
     pushField("prompt", prompt);
-    pushFile("image", "base.png", "image/png", baseBuf);
+    pushFile("image", "base.png", "image/png", pngBuffer);
     // Minimale instellingen
     pushField("n", "1");
     pushField("size", "1024x1024");
@@ -78,7 +74,7 @@ export async function POST(req: NextRequest) {
     parts.push(Buffer.from(`--${boundary}--${CRLF}`));
     const body = Buffer.concat(parts);
 
-    // 2) OpenAI call met harde timeout (voorkomt eindeloos wachten)
+    // 3) OpenAI call met harde timeout
     const oaiRes = await abortableFetch("https://api.openai.com/v1/images/edits", {
       method: "POST",
       headers: {
@@ -100,7 +96,7 @@ export async function POST(req: NextRequest) {
 
     const imgBuffer = Buffer.from(b64, "base64");
 
-    // 3) Upload resultaat naar Vercel Blob (public)
+    // 4) Upload resultaat naar Vercel Blob (public)
     const key = `results/${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
     const putRes = await put(key, new Blob([imgBuffer]), {
       access: "public",
