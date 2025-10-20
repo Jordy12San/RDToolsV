@@ -5,9 +5,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // verhoog server timeout (binnen je hosting-limieten)
 
+// DataURL -> Buffer (we verwachten image/png vanaf de client)
 function dataURLtoBuffer(dataUrl: string): { mime: string; buffer: Buffer } {
   const [meta, b64] = dataUrl.split(",");
-  const mime = meta.split(";")[0].split(":")[1] || "image/jpeg";
+  const mime = meta.split(";")[0].split(":")[1] || "image/png";
   return { mime, buffer: Buffer.from(b64, "base64") };
 }
 
@@ -23,27 +24,35 @@ export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
     const prompt = String(form.get("prompt") || "");
-    const base = String(form.get("base") || ""); // dataURL (image/jpeg)
+    const base = String(form.get("base") || ""); // dataURL (image/png verwacht)
 
     if (!prompt || !base) {
       return NextResponse.json({ error: "Missing prompt/base" }, { status: 400 });
     }
 
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-    const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+    const BLOB_READ_WRITE_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
 
     if (!OPENAI_API_KEY) {
       return NextResponse.json({ error: "OPENAI_API_KEY ontbreekt" }, { status: 500 });
     }
-    if (!BLOB_TOKEN) {
+    if (!BLOB_READ_WRITE_TOKEN) {
       return NextResponse.json({ error: "BLOB_READ_WRITE_TOKEN ontbreekt" }, { status: 500 });
     }
 
-    // 1) Multipart voor OpenAI Images Edits
+    // 1) Multipart voor OpenAI Images Edits (vereist PNG)
     const boundary = "----rdtoolsv_" + Math.random().toString(36).slice(2);
     const CRLF = "\r\n";
 
     const { buffer: baseBuf, mime } = dataURLtoBuffer(base);
+
+    // Controle: als het geen PNG is, geef duidelijke fout terug
+    if (mime !== "image/png") {
+      return NextResponse.json(
+        { error: `Client stuurde ${mime}. Stuur PNG (pas canvas.toBlob(...) aan naar "image/png").` },
+        { status: 400 }
+      );
+    }
 
     const parts: Buffer[] = [];
     function pushField(name: string, value: string) {
@@ -60,7 +69,7 @@ export async function POST(req: NextRequest) {
     }
 
     pushField("prompt", prompt);
-    pushFile("image", "base.jpg", mime, baseBuf);
+    pushFile("image", "base.png", "image/png", baseBuf);
     // Minimale instellingen
     pushField("n", "1");
     pushField("size", "1024x1024");
@@ -97,7 +106,7 @@ export async function POST(req: NextRequest) {
       access: "public",
       contentType: "image/png",
       addRandomSuffix: false,
-      token: BLOB_TOKEN,
+      token: BLOB_READ_WRITE_TOKEN,
     });
 
     return NextResponse.json({ url: putRes.url }, { status: 200 });
