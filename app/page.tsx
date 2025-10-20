@@ -52,6 +52,7 @@ export default function HomePage() {
       const scale = Math.max(512 / bmp.width, 512 / bmp.height);
       const dw = Math.round(bmp.width * scale), dh = Math.round(bmp.height * scale);
       const dx = Math.round((512 - dw) / 2), dy = Math.round((512 - dh) / 2);
+      // Achtergrond wit; PNG zonder alpha is prima voor edits
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, 512, 512);
       ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, dx, dy, dw, dh);
@@ -112,7 +113,8 @@ export default function HomePage() {
 
     const fd = new FormData();
     fd.append("prompt", prompt);
-    fd.append("base", await blobToDataURL(blob)); // dataURL meesturen naar server (image/png)
+    // ⬇️ DataURL zal nu image/png zijn
+    fd.append("base", await blobToDataURL(blob));
 
     // Client-timeout (AbortController) om UI niet te laten hangen
     const controller = new AbortController();
@@ -144,14 +146,14 @@ export default function HomePage() {
       return;
     }
 
-    if (!f.type.startsWith("image/")) { setStatusText("❌ Kies een afbeeldingsbestand."); setStep("error"); return; }
-    if (f.size > 10 * 1024 * 1024) { setStatusText("❌ Bestand is groter dan 10MB."); setStep("error"); return; }
+    // GEEN strikte MIME-check meer: we accepteren alle gangbare fototypes
+    if (f.size > 30 * 1024 * 1024) { setStatusText("❌ Bestand is groter dan 30MB."); setStep("error"); return; }
 
     setStatusText("Foto schalen…");
     setStep("scaling");
     try{
       const out = await scaleTo512(f);
-      preparedBlobRef.current = out.blob;
+      preparedBlobRef.current = out.blob; // altijd PNG
       setVoorImage(out.url);
       setStatusText("Klaar om te genereren.");
       setStep("ready");
