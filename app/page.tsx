@@ -55,7 +55,8 @@ export default function HomePage() {
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, 512, 512);
       ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, dx, dy, dw, dh);
-      const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/jpeg", 0.7));
+      // ⬇️ Belangrijk: PNG sturen (vereist door OpenAI images/edits)
+      const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/png"));
       const outUrl = URL.createObjectURL(blob);
       return { blob, url: outUrl };
     } catch {
@@ -73,7 +74,8 @@ export default function HomePage() {
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, 512, 512);
       ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, dx, dy, dw, dh);
-      const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/jpeg", 0.7));
+      // ⬇️ Ook hier PNG
+      const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/png"));
       const outUrl = URL.createObjectURL(blob);
       URL.revokeObjectURL(url);
       return { blob, url: outUrl };
@@ -110,7 +112,7 @@ export default function HomePage() {
 
     const fd = new FormData();
     fd.append("prompt", prompt);
-    fd.append("base", await blobToDataURL(blob)); // dataURL meesturen naar server
+    fd.append("base", await blobToDataURL(blob)); // dataURL meesturen naar server (image/png)
 
     // Client-timeout (AbortController) om UI niet te laten hangen
     const controller = new AbortController();
@@ -235,7 +237,7 @@ export default function HomePage() {
               <div>
                 <label htmlFor="file">Foto uploaden</label>
                 <input id="file" ref={fileInputRef} onChange={onFileChange} type="file" accept="image/*" />
-                <div className="hint">{voorImage ? "Formaat: 512×512 JPEG (snel uploaden) • output 1024p" : ""}</div>
+                <div className="hint">{voorImage ? "Formaat: 512×512 PNG (snel uploaden) • output 1024p" : ""}</div>
               </div>
 
               <div className="row">
