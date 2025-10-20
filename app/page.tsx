@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 // ===== Types =====
 type Step = "idle" | "scaling" | "ready" | "generating" | "done" | "error";
 
-// Zet op true om zonder backend te kunnen testen
+// Zet op true om zonder backend te testen; in productie false laten
 const USE_FAKE_API = false; // productie-standaard (zet tijdelijk op true om lokaal te testen)
 
 // Heel klein 1x1 PNG (groen) voor mock-download/preview
@@ -44,9 +44,20 @@ export default function HomePage() {
   // ===== Helpers =====
   async function scaleTo512(file: File): Promise<{ blob: Blob; url: string }>{
     // Respecteer EXIF-rotatie waar mogelijk via createImageBitmap
-    let bmp: ImageBitmap;
     try {
-      bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const canvas = document.createElement("canvas");
+      canvas.width = 512; canvas.height = 512;
+      const ctx = canvas.getContext("2d")!;
+      const scale = Math.max(512 / bmp.width, 512 / bmp.height);
+      const dw = Math.round(bmp.width * scale), dh = Math.round(bmp.height * scale);
+      const dx = Math.round((512 - dw) / 2), dy = Math.round((512 - dh) / 2);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, 512, 512);
+      ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, dx, dy, dw, dh);
+      const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/jpeg", 0.7));
+      const outUrl = URL.createObjectURL(blob);
+      return { blob, url: outUrl };
     } catch {
       // Fallback naar <img>.decode() bij oudere browsers
       const url = URL.createObjectURL(file);
@@ -67,24 +78,10 @@ export default function HomePage() {
       URL.revokeObjectURL(url);
       return { blob, url: outUrl };
     }
-
-    // Path wanneer ImageBitmap beschikbaar is
-    const canvas = document.createElement("canvas");
-    canvas.width = 512; canvas.height = 512;
-    const ctx = canvas.getContext("2d")!;
-    const scale = Math.max(512 / bmp.width, 512 / bmp.height);
-    const dw = Math.round(bmp.width * scale), dh = Math.round(bmp.height * scale);
-    const dx = Math.round((512 - dw) / 2), dy = Math.round((512 - dh) / 2);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, 512, 512);
-    ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, dx, dy, dw, dh);
-    const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), "image/jpeg", 0.7));
-    const outUrl = URL.createObjectURL(blob);
-    return { blob, url: outUrl };
   }
 
-  function blobToDataURL(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
+  function blobToDataURL(blob: Blob): Promise<string>{
+    return new Promise((resolve,reject)=>{
       const fr = new FileReader();
       fr.onload = () => resolve(String(fr.result));
       fr.onerror = reject;
@@ -92,7 +89,7 @@ export default function HomePage() {
     });
   }
 
-  function makePrompt() {
+  function makePrompt(){
     const finish = finishVal.toLowerCase();
     const text = kleurVal;
     const hex = kleurHex;
@@ -105,31 +102,25 @@ export default function HomePage() {
   }
 
   // ===== API =====
-  async function generateOnce({ blob, prompt }: { blob: Blob; prompt: string }) {
+  async function generateOnce({ blob, prompt }:{ blob: Blob; prompt: string; }) {
     if (USE_FAKE_API) {
-      // Simuleer 1 rondje genereren voor test/doel/demo
       await new Promise((r) => setTimeout(r, 1500));
-      return MOCK_IMAGE_DATA_URL; // zou normaal een URL vanaf je backend zijn
+      return MOCK_IMAGE_DATA_URL;
     }
 
     const fd = new FormData();
     fd.append("prompt", prompt);
     fd.append("base", await blobToDataURL(blob)); // dataURL meesturen naar server
 
+    // Client-timeout (AbortController) om UI niet te laten hangen
     const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 65000);
+    const t = setTimeout(() => controller.abort(), 120000);
 
-    try {
-      const res = await fetch("/api/generate-sync", {
-        method: "POST",
-        body: fd,
-        signal: controller.signal,
-      });
+    try{
+      const res = await fetch("/api/generate-sync", { method: "POST", body: fd, signal: controller.signal });
       if (!res.ok) {
-        const ttxt = await res.text().catch(() => "(geen tekst)");
-        throw new Error(
-          `Genereren mislukt (${res.status}). Probeer het opnieuw. Details: ${ttxt.slice(0, 200)}`
-        );
+        const ttxt = await res.text().catch(()=>"(geen tekst)");
+        throw new Error(`Genereren mislukt (${res.status}). Details: ${ttxt.slice(0,200)}`);
       }
       const data = await res.json(); // { url }
       return data.url as string;
@@ -139,11 +130,10 @@ export default function HomePage() {
   }
 
   // ===== Events =====
-  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>){
     const f = e.target.files?.[0];
     setNaImage(null);
-    setStatusText("");
-    setProgress(0);
+    setStatusText(""); setProgress(0);
 
     if (!f) {
       setVoorImage(null);
@@ -152,37 +142,26 @@ export default function HomePage() {
       return;
     }
 
-    if (!f.type.startsWith("image/")) {
-      setStatusText("❌ Kies een afbeeldingsbestand.");
-      setStep("error");
-      return;
-    }
-    if (f.size > 10 * 1024 * 1024) {
-      setStatusText("❌ Bestand is groter dan 10MB.");
-      setStep("error");
-      return;
-    }
+    if (!f.type.startsWith("image/")) { setStatusText("❌ Kies een afbeeldingsbestand."); setStep("error"); return; }
+    if (f.size > 10 * 1024 * 1024) { setStatusText("❌ Bestand is groter dan 10MB."); setStep("error"); return; }
 
     setStatusText("Foto schalen…");
     setStep("scaling");
-    try {
+    try{
       const out = await scaleTo512(f);
       preparedBlobRef.current = out.blob;
       setVoorImage(out.url);
       setStatusText("Klaar om te genereren.");
       setStep("ready");
-    } catch (err: any) {
+    }catch(err:any){
       setStatusText("❌ Fout bij schalen van afbeelding.");
       setStep("error");
       console.error(err);
     }
   }
 
-  async function onGenerate() {
-    if (!preparedBlobRef.current) {
-      setStatusText("📷 Kies eerst een foto.");
-      return;
-    }
+  async function onGenerate(){
+    if (!preparedBlobRef.current){ setStatusText("📷 Kies eerst een foto."); return; }
 
     setIsGenerating(true);
     setNaImage(null);
@@ -193,42 +172,35 @@ export default function HomePage() {
     const start = Date.now();
     let iv: number | undefined;
 
-    try {
+    try{
       iv = window.setInterval(() => {
         const elapsed = Date.now() - start;
-        const pct = Math.min(95, 10 + Math.floor((elapsed / 60000) * 85));
+        const pct = Math.min(95, 10 + Math.floor((elapsed/60000) * 85));
         setProgress(pct);
-        setStatusText(
-          `Genereren bij Reno loopt… ${pct}% • Dit duurt meestal 10–30 seconden`
-        );
+        setStatusText(`Genereren bij Reno loopt… ${pct}% • Dit duurt meestal 10–60 seconden`);
       }, 800);
 
-      const url = await generateOnce({
-        blob: preparedBlobRef.current,
-        prompt: makePrompt(),
-      });
+      const url = await generateOnce({ blob: preparedBlobRef.current, prompt: makePrompt() });
 
       setNaImage(url);
       setStatusText("✅ Klaar! 100%");
       setProgress(100);
       setStep("done");
-    } catch (err: any) {
+    }catch(err:any){
       console.error(err);
       setStatusText("❌ Fout: " + (err?.message || "Onbekend"));
       setStep("error");
-    } finally {
+    }finally{
       if (iv) clearInterval(iv);
       setIsGenerating(false);
     }
   }
 
-  function onReset() {
-    setStatusText("");
-    setProgress(0);
+  function onReset(){
+    setStatusText(""); setProgress(0);
     if (voorImage) URL.revokeObjectURL(voorImage);
     if (naImage) URL.revokeObjectURL(naImage);
-    setVoorImage(null);
-    setNaImage(null);
+    setVoorImage(null); setNaImage(null);
     preparedBlobRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
     setStep("idle");
@@ -246,16 +218,14 @@ export default function HomePage() {
             <div className="brand-sub">Visualisatietool</div>
           </div>
         </div>
-        <div className="brand-badge">Beta v1 {USE_FAKE_API ? "• Testmodus" : ""}</div>
+        <div className="brand-badge">Beta v1</div>
       </header>
 
       <main className="container">
         <section className="hero">
           <div className="tile">
             <span className="pill">⚡ Snel & eenvoudig</span>
-            <h1>
-              Laat direct zien hoe het <em>straks</em> wordt
-            </h1>
+            <h1>Laat direct zien hoe het <em>straks</em> wordt</h1>
             <p className="lede">
               Upload een foto van de gevel, kies de kozijnkleur en genereer een realistische na-foto.
               Deuren en eventuele gevelbekleding worden automatisch meegenomen.
@@ -265,9 +235,7 @@ export default function HomePage() {
               <div>
                 <label htmlFor="file">Foto uploaden</label>
                 <input id="file" ref={fileInputRef} onChange={onFileChange} type="file" accept="image/*" />
-                <div className="hint">
-                  {voorImage ? "Formaat: 512×512 JPEG (snel uploaden) • output 1024p" : ""}
-                </div>
+                <div className="hint">{voorImage ? "Formaat: 512×512 JPEG (snel uploaden) • output 1024p" : ""}</div>
               </div>
 
               <div className="row">
@@ -276,11 +244,10 @@ export default function HomePage() {
                   <select
                     id="kleur"
                     value={kleurVal}
-                    onChange={(e) => {
+                    onChange={(e)=>{
                       setKleurVal(e.target.value);
                       setKleurHex((e.target.selectedOptions[0] as HTMLOptionElement).dataset.hex || "");
-                    }}
-                  >
+                    }}>
                     <option data-hex="#383E42">Antraciet (RAL 7016) • verdiept profiel</option>
                     <option data-hex="#F5F6F7">Wit (RAL 9016) • verdiept profiel</option>
                     <option data-hex="#E7DCC8">Crème (RAL 9001) • verdiept profiel</option>
@@ -291,7 +258,7 @@ export default function HomePage() {
                 </div>
                 <div>
                   <label htmlFor="finish">Afwerking</label>
-                  <select id="finish" value={finishVal} onChange={(e) => setFinishVal(e.target.value)}>
+                  <select id="finish" value={finishVal} onChange={(e)=>setFinishVal(e.target.value)}>
                     <option>Mat</option>
                     <option>Zijdeglans</option>
                     <option>Structuur</option>
@@ -300,18 +267,12 @@ export default function HomePage() {
               </div>
 
               <div className="actions">
-                <button className="btn" onClick={onGenerate} disabled={isGenerating || step !== "ready"}>
-                  Genereer na-foto
-                </button>
-                <button className="btn secondary" type="button" onClick={onReset} disabled={isGenerating}>
-                  Reset
-                </button>
+                <button className="btn" onClick={onGenerate} disabled={isGenerating || step!=="ready"}>Genereer na-foto</button>
+                <button className="btn secondary" type="button" onClick={onReset} disabled={isGenerating}>Reset</button>
                 <span className="hint status" aria-live="polite">{statusText}</span>
               </div>
 
-              <div className="progress">
-                <div className="bar" style={{ width: `${progress}%` }} />
-              </div>
+              <div className="progress"><div className="bar" style={{ width: `${progress}%` }} /></div>
             </div>
           </div>
 
@@ -319,27 +280,15 @@ export default function HomePage() {
             <div className="preview">
               <div className="shot">
                 <h4>VOOR</h4>
-                {voorImage ? (
-                  <img src={voorImage} alt="Voorbeeld voor" />
-                ) : (
-                  <div className="placeholder">Nog geen foto</div>
-                )}
+                {voorImage ? <img src={voorImage} alt="Voorbeeld voor" /> : <div className="placeholder">Nog geen foto</div>}
               </div>
               <div className="shot">
                 <h4>NA (AI)</h4>
-                {naImage ? (
-                  <img src={naImage} alt="Voorbeeld na" />
-                ) : (
-                  <div className="placeholder">Nog geen resultaat</div>
-                )}
+                {naImage ? <img src={naImage} alt="Voorbeeld na" /> : <div className="placeholder">Nog geen resultaat</div>}
               </div>
             </div>
             <div className="dl">
-              {naImage ? (
-                <a href={naImage} download="na-foto.png" className="btn">
-                  Download
-                </a>
-              ) : null}
+              {naImage ? <a href={naImage} download="na-foto.png" className="btn">Download</a> : null}
               <span className="hint">{naImage ? "Tip: laat de klant inzoomen op details." : ""}</span>
             </div>
           </div>
@@ -424,103 +373,3 @@ export default function HomePage() {
     </>
   );
 }
-
-
-/* ==========================================================
-   === API-ROUTE VOOR PRODUCTIE (Next.js App Router) ===
-   Plaats dit in: app/api/generate-sync/route.ts
-   Vul RENO_API_URL en RENO_API_KEY als env vars in (Vercel).
-   ========================================================== */
-
-/*
-import { NextRequest, NextResponse } from "next/server";
-
-export const runtime = "nodejs"; // of "edge" als je upstream dat toelaat
-
-export async function POST(req: NextRequest) {
-  try {
-    const form = await req.formData();
-    const prompt = String(form.get("prompt") || "");
-    const base = String(form.get("base") || ""); // dataURL (image/jpeg)
-
-    if (!prompt || !base) {
-      return NextResponse.json({ error: "Missing prompt/base" }, { status: 400 });
-    }
-
-    const upstream = process.env.RENO_API_URL; // bv. https://api.renovatie.direct/generate
-    const apiKey = process.env.RENO_API_KEY || "";
-
-    if (!upstream) {
-      return NextResponse.json({ error: "RENO_API_URL not set" }, { status: 500 });
-    }
-
-    // Stuur door naar je model/renderer
-    const res = await fetch(upstream, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify({ prompt, base }),
-    });
-
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      return NextResponse.json({ error: t || `Upstream error ${res.status}` }, { status: 502 });
-    }
-
-    // Verwacht: { url: string }
-    const data = await res.json();
-    if (!data?.url) {
-      return NextResponse.json({ error: "Upstream returned no url" }, { status: 502 });
-    }
-    return NextResponse.json({ url: data.url });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Unknown" }, { status: 500 });
-  }
-}
-*/
-
-/* ==========================================================
-   === ALTERNATIEF: Pages Router ===
-   Plaats dit in: pages/api/generate-sync.ts
-   ========================================================== */
-
-/*
-import type { NextApiRequest, NextApiResponse } from "next";
-
-export const config = {
-  api: { bodyParser: false }, // we lezen FormData, niet JSON
-};
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
-  const boundary = req.headers["content-type"]?.toString().split("boundary=")[1];
-  if (!boundary) return res.status(400).json({ error: "Invalid multipart" });
-
-  // Simpele multipart parse via web-standaard API is niet native in Node.
-  // In productie: gebruik bv. busboy/formidable of stap over op App Router zoals hierboven.
-  return res.status(400).json({ error: "Use App Router route.ts for multipart FormData" });
-}
-*/
-
-/* ==========================================================
-   === next.config.js (optioneel als je CDN-URL's toont) ===
-   ========================================================== */
-
-/*
-// next.config.js
-module.exports = {
-  images: {
-    remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "cdn.jouw-domein.nl", // pas aan naar je eigen host
-      },
-    ],
-  },
-};
-*/
